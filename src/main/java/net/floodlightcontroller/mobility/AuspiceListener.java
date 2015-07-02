@@ -184,7 +184,7 @@ public class AuspiceListener implements IOFMessageListener, IFloodlightModule, I
 			for (OFFlowStatsReply flow : statsReply){
 				for (OFFlowStatsEntry flowEntry : flow.getEntries()){
 					if (flowEntry.getMatch().get(MatchField.ETH_DST).equals(mac)){
-						System.out.println("[RemoveFlows] Found a flow from "
+						System.out.println("[GetCurrentFlows] Found a flow from "
 										+ flowEntry.getMatch().get(MatchField.ETH_SRC).toString()
 		        						+ " to "
 		        						+ flowEntry.getMatch().get(MatchField.ETH_DST).toString()
@@ -409,8 +409,9 @@ public class AuspiceListener implements IOFMessageListener, IFloodlightModule, I
 				System.out.println("[RECEIVE] This packet is going to a downed mac!");
 			}
 		    // if it has moved, we generate the flows for this particular destinaton
+			System.out.println(ongoingConnections);
 			if (ongoingConnections.containsKey(dstMAC))
-				if (ongoingConnections.get(sourceMAC).equals(dstMAC))
+				if (ongoingConnections.get(dstMAC).equals(sourceMAC))
 					System.out.println("[RECEIVE] There was an ongoing connection between "+ dstMAC+" and "+sourceMAC);
 
 			//if its IP has changed and there was a previous connection before link down
