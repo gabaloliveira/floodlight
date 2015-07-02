@@ -39,6 +39,7 @@ import javax.annotation.Nonnull;
 
 import net.floodlightcontroller.core.annotations.LogMessageDoc;
 import net.floodlightcontroller.core.internal.IOFSwitchManager;
+import net.floodlightcontroller.core.internal.TableFeatures;
 import net.floodlightcontroller.core.util.AppCookie;
 import net.floodlightcontroller.core.util.URIUtil;
 
@@ -52,7 +53,6 @@ import org.projectfloodlight.openflow.protocol.OFFactory;
 import org.projectfloodlight.openflow.protocol.OFFeaturesReply;
 import org.projectfloodlight.openflow.protocol.OFFlowWildcards;
 import org.projectfloodlight.openflow.protocol.OFMessage;
-
 import org.projectfloodlight.openflow.protocol.OFPortConfig;
 import org.projectfloodlight.openflow.protocol.OFPortDesc;
 import org.projectfloodlight.openflow.protocol.OFPortDescStatsReply;
@@ -62,10 +62,13 @@ import org.projectfloodlight.openflow.protocol.OFPortStatus;
 import org.projectfloodlight.openflow.protocol.OFRequest;
 import org.projectfloodlight.openflow.protocol.OFStatsReply;
 import org.projectfloodlight.openflow.protocol.OFStatsRequest;
+import org.projectfloodlight.openflow.protocol.OFTableFeatures;
+import org.projectfloodlight.openflow.protocol.OFTableFeaturesStatsReply;
 import org.projectfloodlight.openflow.protocol.OFVersion;
 import org.projectfloodlight.openflow.types.DatapathId;
 import org.projectfloodlight.openflow.types.OFAuxId;
 import org.projectfloodlight.openflow.types.OFPort;
+import org.projectfloodlight.openflow.types.TableId;
 
 import net.floodlightcontroller.util.LinkedHashSetWrapper;
 import net.floodlightcontroller.util.OrderedCollection;
@@ -76,6 +79,7 @@ import org.slf4j.LoggerFactory;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -95,6 +99,8 @@ public class OFSwitch implements IOFSwitchBackend {
 	protected Set<OFActionType> actions;
 	protected short tables;
 	protected final DatapathId datapathId;
+
+	private Map<TableId, TableFeatures> tableFeaturesByTableId;
 
 	private boolean startDriverHandshakeCalled = false;
 	private final Map<OFAuxId, IOFConnectionBackend> connections;
@@ -117,6 +123,8 @@ public class OFSwitch implements IOFSwitchBackend {
 	private SwitchStatus status;
 
 	public static final int OFSWITCH_APP_ID = ident(5);
+	
+	private TableId maxTableToGetTableMissFlow = TableId.of(4); /* this should cover most HW switches that have a couple SW flow tables */
 
 	static {
 		AppCookie.registerApp(OFSwitch.OFSWITCH_APP_ID, "switch");
@@ -154,6 +162,8 @@ public class OFSwitch implements IOFSwitchBackend {
 		this.setAttribute(PROP_FASTWILDCARDS, EnumSet.allOf(OFFlowWildcards.class));
 		this.setAttribute(PROP_SUPPORTS_OFPP_FLOOD, Boolean.TRUE);
 		this.setAttribute(PROP_SUPPORTS_OFPP_TABLE, Boolean.TRUE);
+
+		this.tableFeaturesByTableId = new HashMap<TableId, TableFeatures>();
 	}
 
 	private static int ident(int i) {
@@ -705,6 +715,7 @@ public class OFSwitch implements IOFSwitchBackend {
 		log.trace("Channel: {}, Connected: {}", connections.get(OFAuxId.MAIN).getRemoteInetAddress(), connections.get(OFAuxId.MAIN).isConnected());
 		if (isActive()) {
 			connections.get(OFAuxId.MAIN).write(m);
+			switchManager.handleOutgoingMessage(this, m);
 		} else {
 			log.warn("Attempted to write to switch {} that is SLAVE.", this.getId().toString());
 		}
@@ -736,6 +747,7 @@ public class OFSwitch implements IOFSwitchBackend {
 	public void write(OFMessage m, LogicalOFMessageCategory category) {
 		if (isActive()) {
 			this.getConnection(category).write(m);
+			switchManager.handleOutgoingMessage(this, m);
 		} else {
 			log.warn("Attempted to write to switch {} that is SLAVE.", this.getId().toString());
 		}
@@ -745,6 +757,10 @@ public class OFSwitch implements IOFSwitchBackend {
 	public void write(Iterable<OFMessage> msglist, LogicalOFMessageCategory category) {
 		if (isActive()) {
 			this.getConnection(category).write(msglist);
+			
+			for(OFMessage m : msglist) {
+				switchManager.handleOutgoingMessage(this, m);				
+			}
 		} else {
 			log.warn("Attempted to write to switch {} that is SLAVE.", this.getId().toString());
 		}
@@ -775,6 +791,10 @@ public class OFSwitch implements IOFSwitchBackend {
 	public void write(Iterable<OFMessage> msglist) {
 		if (isActive()) {
 			connections.get(OFAuxId.MAIN).write(msglist);
+						
+			for(OFMessage m : msglist) {
+				switchManager.handleOutgoingMessage(this, m);
+			}
 		} else {
 			log.warn("Attempted to write to switch {} that is SLAVE.", this.getId().toString());
 		}
@@ -806,7 +826,7 @@ public class OFSwitch implements IOFSwitchBackend {
 		this.buffers = featuresReply.getNBuffers();
 
 		if (featuresReply.getVersion().compareTo(OFVersion.OF_13) < 0 ) {
-			// FIXME:LOJI: OF1.3 has per table actions. This needs to be modeled / handled here
+			/* OF1.3+ Per-table actions are set later in the OFTableFeaturesRequest/Reply */
 			this.actions = featuresReply.getActions();
 		}
 		this.tables = featuresReply.getNTables();
@@ -845,6 +865,23 @@ public class OFSwitch implements IOFSwitchBackend {
 	public OrderedCollection<PortChangeEvent>
 	processOFPortStatus(OFPortStatus ps) {
 		return portManager.handlePortStatusMessage(ps);
+	}
+
+	@Override
+	public void processOFTableFeatures(List<OFTableFeaturesStatsReply> replies) {
+		/*
+		 * Parse out all the individual replies for each table.
+		 */
+		for (OFTableFeaturesStatsReply reply : replies) {
+			/*
+			 * Add or update the features for a particular table.
+			 */
+			List<OFTableFeatures> tfs = reply.getEntries();
+			for (OFTableFeatures tf : tfs) {
+				tableFeaturesByTableId.put(tf.getTableId(), TableFeatures.of(tf));
+				log.trace("Received TableFeatures for TableId {}, TableName {}", tf.getTableId().toString(), tf.getName());
+			}
+		}
 	}
 
 	@Override
@@ -920,12 +957,69 @@ public class OFSwitch implements IOFSwitchBackend {
 
 	@Override
 	public <REPLY extends OFStatsReply> ListenableFuture<List<REPLY>> writeStatsRequest(OFStatsRequest<REPLY> request) {
-		return connections.get(OFAuxId.MAIN).writeStatsRequest(request);
+		return addInternalStatsReplyListener(connections.get(OFAuxId.MAIN).writeStatsRequest(request), request);
 	}
 
 	@Override
 	public <REPLY extends OFStatsReply> ListenableFuture<List<REPLY>> writeStatsRequest(OFStatsRequest<REPLY> request, LogicalOFMessageCategory category) {
-		return getConnection(category).writeStatsRequest(request);
+		return addInternalStatsReplyListener(getConnection(category).writeStatsRequest(request), request);
+	}	
+
+	/**
+	 * Append a listener to receive an OFStatsReply and update the 
+	 * internal OFSwitch data structures.
+	 * 
+	 * This presently taps into the following stats request 
+	 * messages to listen for the corresponding reply:
+	 * -- OFTableFeaturesStatsRequest
+	 * 
+	 * Extend this to tap into and update other OFStatsType messages.
+	 * 
+	 * @param future
+	 * @param request
+	 * @return
+	 */
+	private <REPLY extends OFStatsReply> ListenableFuture<List<REPLY>> addInternalStatsReplyListener(final ListenableFuture<List<REPLY>> future, OFStatsRequest<REPLY> request) {
+		switch (request.getStatsType()) {
+		case TABLE_FEATURES:
+		/* case YOUR_CASE_HERE */
+			future.addListener(new Runnable() {
+				/*
+				 * We know the reply will be a list of OFStatsReply.
+				 */
+				@SuppressWarnings("unchecked")
+				@Override
+				public void run() {
+					/*
+					 * The OFConnection handles REPLY_MORE for us in the case there
+					 * are multiple OFStatsReply messages with the same XID.
+					 */
+					try {
+						List<? extends OFStatsReply> replies = future.get();
+						if (!replies.isEmpty()) {
+							/*
+							 * By checking only the 0th element, we assume all others are the same type.
+							 * TODO If not, what then?
+							 */
+							switch (replies.get(0).getStatsType()) {
+							case TABLE_FEATURES:
+								processOFTableFeatures((List<OFTableFeaturesStatsReply>) future.get());
+								break;
+							/* case YOUR_CASE_HERE */
+							default:
+								throw new Exception("Received an invalid OFStatsReply of " 
+										+ replies.get(0).getStatsType().toString() + ". Expected TABLE_FEATURES.");
+							}
+						}
+					} catch (Exception e) {
+						e.printStackTrace();
+					}
+				}
+			}, MoreExecutors.sameThreadExecutor()); /* No need for another thread. */
+		default:
+			break;
+		}
+		return future; /* either unmodified or with an additional listener */
 	}
 
 	@Override
@@ -1118,5 +1212,25 @@ public class OFSwitch implements IOFSwitchBackend {
 			}
 		}
 		return false;
+	}
+
+	@Override
+	public TableFeatures getTableFeatures(TableId table) {
+		return tableFeaturesByTableId.get(table);
+	}
+
+	@Override
+	public TableId getMaxTableForTableMissFlow() {
+		return maxTableToGetTableMissFlow;
+	}
+	
+	@Override
+	public TableId setMaxTableForTableMissFlow(TableId max) {
+		if (max.getValue() >= tables) {
+			maxTableToGetTableMissFlow = TableId.of(tables - 1 < 0 ? 0 : tables - 1);
+		} else {
+			maxTableToGetTableMissFlow = max;
+		}
+		return maxTableToGetTableMissFlow;
 	}
 }
