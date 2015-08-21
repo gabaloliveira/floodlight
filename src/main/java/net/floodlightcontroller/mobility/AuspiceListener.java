@@ -47,11 +47,9 @@ import edu.umass.cs.gns.exceptions.GnsException;
 import org.projectfloodlight.openflow.protocol.OFFactories;
 import org.projectfloodlight.openflow.protocol.OFFactory;
 import org.projectfloodlight.openflow.protocol.OFFlowDelete;
-import org.projectfloodlight.openflow.protocol.OFFlowMod;
 import org.projectfloodlight.openflow.protocol.OFFlowStatsEntry;
 import org.projectfloodlight.openflow.protocol.OFFlowStatsReply;
 import org.projectfloodlight.openflow.protocol.OFFlowStatsRequest;
-import org.projectfloodlight.openflow.protocol.OFMatchV1;
 import org.projectfloodlight.openflow.protocol.OFMessage;
 import org.projectfloodlight.openflow.protocol.OFPacketIn;
 import org.projectfloodlight.openflow.protocol.OFType;
@@ -80,7 +78,6 @@ import net.floodlightcontroller.devicemanager.IDevice;
 import net.floodlightcontroller.devicemanager.IDeviceListener;
 import net.floodlightcontroller.devicemanager.IDeviceService;
 import net.floodlightcontroller.devicemanager.SwitchPort;
-import net.floodlightcontroller.flowcache.PortDownReconciliation;
 import net.floodlightcontroller.linkdiscovery.ILinkDiscoveryListener;
 import net.floodlightcontroller.linkdiscovery.ILinkDiscoveryService;
 import net.floodlightcontroller.packet.Ethernet;
@@ -309,8 +306,10 @@ public class AuspiceListener implements IOFMessageListener, IFloodlightModule, I
 				+ "\", \"actions\":\"set_ipv4_dst=" + newIpv4Dst
 				+ ",output=" + outputDst
 				+ "\"}";
+		name = "flow-mod-"+ ++flowNumber;
+
 		String flowVolta = "{\"switch\": \"" + dstDpid
-				+ "\", \"name\":\"flow-mod-2" 
+				+ "\", \"name\":\"" + name
 				+ "\", \"cookie\":\"0"
 				+ "\", \"priority\":\"32768"
 				+ "\",\"active\":\"true"
@@ -385,172 +384,180 @@ public class AuspiceListener implements IOFMessageListener, IFloodlightModule, I
 	}
 
 	@Override
-		public net.floodlightcontroller.core.IListener.Command receive(
-				IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
+	public net.floodlightcontroller.core.IListener.Command receive(
+			IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
 			
-			Ethernet eth =
-		                IFloodlightProviderService.bcStore.get(cntx,
-		                                            IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
-			IPv4 ipv4 = null;
-		        if(eth.getPayload() instanceof IPv4)
-		        	ipv4 = (IPv4) eth.getPayload();
+		Ethernet eth =
+	                IFloodlightProviderService.bcStore.get(cntx,
+	                                            IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
+		IPv4 ipv4 = null;
+	    if(eth.getPayload() instanceof IPv4)
+	    	ipv4 = (IPv4) eth.getPayload();
 			 
-		        MacAddress sourceMAC = eth.getSourceMACAddress();
-		        MacAddress dstMAC = eth.getDestinationMACAddress();
-	            // Now to find to which port it is connected		        
-				OFPort inPort = (((OFPacketIn)msg).getVersion().compareTo(OFVersion.OF_12) < 0 ? 
-								((OFPacketIn)msg).getInPort() : 
-								((OFPacketIn)msg).getMatch().get(MatchField.IN_PORT));
+		MacAddress sourceMAC = eth.getSourceMACAddress();
+		MacAddress dstMAC = eth.getDestinationMACAddress();
+	    // Now to find to which port it is connected		        
+		OFPort inPort = (((OFPacketIn)msg).getVersion().compareTo(OFVersion.OF_12) < 0 ? 
+						((OFPacketIn)msg).getInPort() : 
+						((OFPacketIn)msg).getMatch().get(MatchField.IN_PORT));
 
-			//System.out.println("[RECEIVE] Received a packet! from "+sourceMAC+" to "+dstMAC);
+		//System.out.println("[RECEIVE] Received a packet! from "+sourceMAC+" to "+dstMAC);
 				
-			// if it is downed currently we drop it
-			if (downedMacs.contains(dstMAC)){
-				System.out.println("[RECEIVE] This packet is going to a downed mac!");
-			}
-		    // if it has moved, we generate the flows for this particular destinaton
-			System.out.println(ongoingConnections);
-			if (ongoingConnections.containsKey(dstMAC))
-				if (ongoingConnections.get(dstMAC).equals(sourceMAC))
-					System.out.println("[RECEIVE] There was an ongoing connection between "+ dstMAC+" and "+sourceMAC);
-
-			//if its IP has changed and there was a previous connection before link down
-			if ((changedIPMacs.contains(dstMAC)) 
-					&& (ipv4 != null)
-					&& (ongoingConnections.containsKey(dstMAC))
-					&& (ongoingConnections.get(dstMAC).equals(sourceMAC))){
-					
-				System.out.println("[RECEIVE] Changed IP address!!");
-				removeFlows(sw, dstMAC);
-				String newIpv4;
-				String newSw;
-				String newPort;
-				// Create a guid Entry object
-				GuidEntry macGuid;
-				try {
-					macGuid = GuidUtils.lookupOrCreateGuid(client, accountGuid, dstMAC.toString());
-					// get one of its IPs
-					newIpv4 = client.fieldReadArrayFirstElement(macGuid, "IPs");
-					// get its switch
-					newSw = client.fieldReadArrayFirstElement(macGuid, "switch");
-					// get its port
-					newPort = client.fieldReadArrayFirstElement(macGuid, "port");
-					flowUpdate(sw.getId(), newSw, ipv4.getSourceAddress(), ipv4.getDestinationAddress(), 
-									newIpv4, inPort , newPort);
-				} catch (Exception e) {
-					e.printStackTrace();
+		// if it is downed currently we drop it
+		if (downedMacs.contains(dstMAC)){
+			System.out.println("[RECEIVE] This packet is going to a downed mac!");
+		}
+	    // if it has moved, we generate the flows for this particular destinaton
+		if (ongoingConnections.containsKey(dstMAC))
+			if (ongoingConnections.get(dstMAC).equals(sourceMAC)){
+				System.out.println("[RECEIVE] There was an ongoing connection between "+ dstMAC+" and "+sourceMAC);
+				if (!changedIPMacs.contains(dstMAC)){
+					System.out.println("Command Stop");
+					return Command.STOP;	
 				}
-				//System.out.println("[RECEIVE] Removing from ongoingConnections:"+dstMAC);
-				//ongoingConnections.remove(dstMAC);
-				//changedIPMacs.remove(dstMAC);
 			}
-			//if it has changed location
-			if ((movedMacs.contains(dstMAC)) && 
-					(ongoingConnections.containsKey(dstMAC)) &&
-					(ongoingConnections.get(dstMAC).equals(sourceMAC))){
-				
+		//if its IP has changed and there was a previous connection before link down
+		if ((changedIPMacs.contains(dstMAC)) 
+				&& (ipv4 != null)
+				&& (ongoingConnections.containsKey(dstMAC))
+				&& (ongoingConnections.get(dstMAC).equals(sourceMAC))){
+					
+			System.out.println("[RECEIVE] Changed IP address!!");
+			removeFlows(sw, dstMAC);
+			String newIpv4;
+			String newSw;
+			String newPort;
+			// Create a guid Entry object
+			GuidEntry macGuid;
+			try {
+				macGuid = GuidUtils.lookupOrCreateGuid(client, accountGuid, dstMAC.toString());
+				// get one of its IPs
+				newIpv4 = client.fieldReadArrayFirstElement(macGuid, "IPs");
+				// get its switch
+				newSw = client.fieldReadArrayFirstElement(macGuid, "switch");
+				// get its port
+				newPort = client.fieldReadArrayFirstElement(macGuid, "port");
+				flowUpdate(sw.getId(), newSw, ipv4.getSourceAddress(), ipv4.getDestinationAddress(), 
+								newIpv4, inPort , newPort);
+				return Command.STOP;
+			} catch (Exception e) {
+				e.printStackTrace();
 			}
+			//System.out.println("[RECEIVE] Removing from ongoingConnections:"+dstMAC);
+			//ongoingConnections.remove(dstMAC);
+			//changedIPMacs.remove(dstMAC);
+		}
+		//if it has changed location
+		if ((movedMacs.contains(dstMAC)) && 
+				(ongoingConnections.containsKey(dstMAC)) &&
+				(ongoingConnections.get(dstMAC).equals(sourceMAC))){
+			//TODO: code movable node
+		}
 
-	        // Add MacAddress to our "known nodes" Mapping.
-			if (!macsToSwitch.containsKey(sourceMAC)) {
+	    // Add MacAddress to our "known nodes" Mapping.
+		if (!macsToSwitch.containsKey(sourceMAC)) {
 		        	
-				/*
-		        * If it is not in the Mapping, we insert it. 
-		        * If it is in the mapping, we update its entry.
-		        */
+			/*
+		     * If it is not in the Mapping, we insert it. 
+		     * If it is in the mapping, we update its entry.
+		     */
 		        	
-		        macsToSwitch.put(sourceMAC, sw.getId());
-			}else macsToSwitch.replace(sourceMAC, sw.getId());
+			macsToSwitch.put(sourceMAC, sw.getId());
+		}else macsToSwitch.replace(sourceMAC, sw.getId());
 		      
-			if (!macsToPort.containsKey(sourceMAC)) {
+		if (!macsToPort.containsKey(sourceMAC)) {
+		        	
+			/*
+		     * If it is not in the Mapping, we insert it. 
+		     * If it is in the mapping, we update its entry.
+		     */
+		        	
+			macsToPort.put(sourceMAC, inPort);
+		}else macsToPort.replace(sourceMAC, inPort);
+				
+		if (ipv4 != null) {
+			if (!macsToIp.containsKey(sourceMAC)) {
 		        	
 				/*
-		         * If it is not in the Mapping, we insert it. 
-		         * If it is in the mapping, we update its entry.
-		         */
+				 * If it is not in the Mapping, we insert it. 
+				 * If it is in the mapping, we update its entry.
+				 */
 		        	
-				macsToPort.put(sourceMAC, inPort);
-			}else macsToPort.replace(sourceMAC, inPort);
-				
-			if (ipv4 != null) {
-				if (!macsToIp.containsKey(sourceMAC)) {
-		        	
-					/*
-					 * If it is not in the Mapping, we insert it. 
-					 * If it is in the mapping, we update its entry.
-					 */
-		        	
-					macsToIp.put(sourceMAC, ipv4.getSourceAddress());
+				macsToIp.put(sourceMAC, ipv4.getSourceAddress());
+				System.out.println("[RECEIVE] Added IP "
+									+ ipv4.getSourceAddress().toString()
+									+ " to MAC map " + sourceMAC.toString());
+			}else {
+				if (!macsToIp.get(sourceMAC).equals(ipv4.getSourceAddress())){
+					macsToIp.replace(sourceMAC, ipv4.getSourceAddress());
 					System.out.println("[RECEIVE] Added IP "
 										+ ipv4.getSourceAddress().toString()
 										+ " to MAC map " + sourceMAC.toString());
-				}else {
-					if (!macsToIp.get(sourceMAC).equals(ipv4.getSourceAddress())){
-						macsToIp.replace(sourceMAC, ipv4.getSourceAddress());
-						System.out.println("[RECEIVE] Added IP "
-											+ ipv4.getSourceAddress().toString()
-											+ " to MAC map " + sourceMAC.toString());
-					}
 				}
 			}
-	
-			return Command.CONTINUE;
 		}
+	
+		return Command.CONTINUE;
+	}
 
 	@Override
-		public void linkDiscoveryUpdate(LDUpdate update) {
-			MacAddress mac = null;
-			//OFPort oldPort = null;
-			switch (update.getOperation()){
-				case PORT_DOWN:
-					isLinkUp=false;
-					if (macsToSwitch.containsValue(update.getSrc())){
-						for (Map.Entry<MacAddress, DatapathId> entry : macsToSwitch.entrySet()){
-							if (entry.getValue().equals(update.getSrc())){
+	public void linkDiscoveryUpdate(LDUpdate update) {
+		MacAddress mac = null;
+		//OFPort oldPort = null;
+		switch (update.getOperation()){
+			case LINK_REMOVED:
+				System.out.println("TESTE DAEW PENIS");
+				System.out.println(update);
+				break;
+			case PORT_DOWN:
+				isLinkUp=false;
+				if (macsToSwitch.containsValue(update.getSrc())){
+					for (Map.Entry<MacAddress, DatapathId> entry : macsToSwitch.entrySet()){
+						if (entry.getValue().equals(update.getSrc())){
+							/*
+							 *  We found one MAC Address which is/was connected to the switch.
+							 *  Now we need to check the port this mac was connected to.
+							 *  As there's only one MAC-switch-port combination, we now are sure
+							 *  we found the MAC that suffered link update.
+							 */
+							if ((macsToPort.containsKey(entry.getKey())) && 
+									(macsToPort.get(entry.getKey()).equals(update.getSrcPort()))){
 								/*
-								 *  We found one MAC Address which is/was connected to the switch.
-								 *  Now we need to check the port this mac was connected to.
-								 *  As there's only one MAC-switch-port combination, we now are sure
-								 *  we found the MAC that suffered link update.
+								 * If there's a mac in the mac-port Map, and it's value is the same as 
+								 * the port that triggered the update, we now know the MAC that was
+								 * updated
 								 */
-								if ((macsToPort.containsKey(entry.getKey())) && 
-										(macsToPort.get(entry.getKey()).equals(update.getSrcPort()))){
-									/*
-									 * If there's a mac in the mac-port Map, and it's value is the same as 
-									 * the port that triggered the update, we now know the MAC that was
-									 * updated
-									 */
-									mac = entry.getKey();
-								}
-							} if (mac == null) break; 
-						} if (mac == null) logger.warn("Couldn't find which node got offline.");
-						//
-						System.out.println("[PORT_DOWN] Clearing ongoingConnections");
-						ongoingConnections.clear();
-						DatapathId dpid = macsToSwitch.get(mac);
-						IOFSwitch mySwitch =  switchService.getSwitch(dpid);
-						// Check if there was any flows to this host (active flow=active connection) 
-						getCurrentFlows(mySwitch, mac);
-						// Remove all flows related to this MAC
-						removeFlows(mySwitch, mac);
-						System.out.println("[PORT_DOWN]Adding to downedMacs "+mac);
-						downedMacs.add(mac);	
-						try {
-							auspiceRemoveEntry(mac);
-						} catch (Exception e) {
-							e.printStackTrace();
-						}
+								mac = entry.getKey();
+							}
+						} if (mac == null) break; 
+					} if (mac == null) logger.warn("Couldn't find which node got offline.");
+
+					System.out.println("[PORT_DOWN] Clearing ongoingConnections");
+					ongoingConnections.clear();
+					DatapathId dpid = macsToSwitch.get(mac);
+					IOFSwitch mySwitch =  switchService.getSwitch(dpid);
+					// Check if there was any flows to this host (active flow=active connection) 
+					getCurrentFlows(mySwitch, mac);
+					// Remove all flows related to this MAC
+					removeFlows(mySwitch, mac);
+					System.out.println("[PORT_DOWN]Adding to downedMacs "+mac);
+					downedMacs.add(mac);	
+					try {
+						auspiceRemoveEntry(mac);
+					} catch (Exception e) {
+						e.printStackTrace();
 					}
-					break;
-				case PORT_UP:
-					// DeviceManager will find port and Switch info
-					isLinkUp=true;
-					break;
-				default:
-					//ignore
-			}
-			
+				}
+				break;
+			case PORT_UP:
+				// DeviceManager will find port and Switch info
+				isLinkUp=true;
+				break;
+			default:
+				//ignore
 		}
+		
+	}
 
 	@Override
 	public void linkDiscoveryUpdate(List<LDUpdate> updateList) {
@@ -638,144 +645,142 @@ public class AuspiceListener implements IOFMessageListener, IFloodlightModule, I
 	}
 
 	// IDeviceListener
-		class DeviceListenerImpl implements IDeviceListener{
-			@Override
-			public void deviceAdded(IDevice device) {
-				OFPort port = null;
-				DatapathId dpid = null;
-				// Set up parameters for it in Auspice
-				try {
-					/* 
-					 * Assuming there's only one attachment point at a time, this will work
-					 * If there's more than one attachment point, we need to check updateList
-					 * and match this switch+port to updateList switch+port combination, so 
-					 * we know which switch+port caused the update.
-					 *  TODO Handle connection to more than one attachment point at a time.
-					 */
+	class DeviceListenerImpl implements IDeviceListener{
+		@Override
+		public void deviceAdded(IDevice device) {
+			OFPort port = null;
+			DatapathId dpid = null;
+			// Set up parameters for it in Auspice
+			try {
+				/* 
+				 * Assuming there's only one attachment point at a time, this will work
+				 * If there's more than one attachment point, we need to check updateList
+				 * and match this switch+port to updateList switch+port combination, so 
+				 * we know which switch+port caused the update.
+				 *  TODO Handle connection to more than one attachment point at a time.
+				 */
+				for (SwitchPort attachment : device.getAttachmentPoints()){
+					dpid = attachment.getSwitchDPID();
+					port = attachment.getPort();
+					System.out.println("[DeviceAdded] "+attachment);
+					auspiceUpdateLocation(device.getMACAddress(), dpid, port);
+				}
+	
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+
+		@Override
+		public void deviceRemoved(IDevice device) {
+			// Ignore, this is only for timeouts.
+		}
+
+		@Override
+		public void deviceIPV4AddrChanged(IDevice device) {
+			List<IPv4Address> ips = Arrays.asList(device.getIPv4Addresses());
+					
+			JSONArray array = new JSONArray();
+			try {
+				// Add or lookup MAC Address as a new GUID Entry
+				GuidEntry macGuid = GuidUtils.lookupOrCreateGuid(client, accountGuid, device.getMACAddressString());
+
+				for (IPv4Address ip : ips){
+					System.out.println("[AddrChanged] new ip: "+ip.toString());
+					if (macsToIp.containsKey(device.getMACAddress())){
+						System.out.println("[AddrChanged] oldIP: "+macsToIp.get(device.getMACAddress()).toString());
+						if ((!ip.toString().equals("0.0.0.0")) && (!macsToIp.get(device.getMACAddress()).equals(ip))){
+							System.out.println("[AddrChanged] Colocando IP no array: "+ip.toString());
+							changedIPMacs.add(device.getMACAddress());
+							array.put(ip.toString());
+						}	
+					}else{
+						System.out.println("[AddrChanged(else)] oldIP: null");
+						if (!ip.toString().equals("0.0.0.0")){
+							System.out.println("[AddrChanged(else)] Colocando IP no array: "+ip.toString());	
+							array.put(ip.toString());
+						}
+					}	
+				}
+				if (array.length()!=0)
+					auspiceUpdateIp(macGuid, device.getMACAddress(), array);
+			}	catch (Exception e) {
+				e.printStackTrace();
+			}
+		}
+			
+		@Override
+		public void deviceMoved(IDevice device) {
+			OFPort port = null;
+			DatapathId dpid = null;
+			// Set up parameters for it in Auspice
+			try {
+				/* 
+				 * Assuming there's only one attachment point at a time, this will work
+				 * If there's more than one attachment point, we need to check updateList
+				 * and match this switch+port to updateList switch+port combination, so 
+				 * we know which switch+port caused the update.
+				 *  TODO Handle connection to more than one attachment point at a time.
+				 */
+				if (isLinkUp){
+					// This is a link up event
 					for (SwitchPort attachment : device.getAttachmentPoints()){
 						dpid = attachment.getSwitchDPID();
 						port = attachment.getPort();
-						System.out.println("[DeviceAdded] "+attachment);
-						auspiceUpdateLocation(device.getMACAddress(), dpid, port);
-					}
-					
-					
-				} catch (Exception e) {
-					e.printStackTrace();
-				}
-			}
-
-			@Override
-			public void deviceRemoved(IDevice device) {
-				// Ignore, this is only for timeouts.
-			}
-
-			@Override
-			public void deviceIPV4AddrChanged(IDevice device) {
-
-				List<IPv4Address> ips = Arrays.asList(device.getIPv4Addresses());
-					
-				JSONArray array = new JSONArray();
-				try {
-					// Add or lookup MAC Address as a new GUID Entry
-					GuidEntry macGuid = GuidUtils.lookupOrCreateGuid(client, accountGuid, device.getMACAddressString());
-
-					for (IPv4Address ip : ips){
-						System.out.println("[AddrChanged] new ip: "+ip.toString());
-						if (macsToIp.containsKey(device.getMACAddress())){
-							System.out.println("[AddrChanged] oldIP: "+macsToIp.get(device.getMACAddress()).toString());
-							if ((!ip.toString().equals("0.0.0.0")) && (!macsToIp.get(device.getMACAddress()).equals(ip))){
-								System.out.println("[AddrChanged] Colocando IP no array: "+ip.toString());
-								changedIPMacs.add(device.getMACAddress());
-								array.put(ip.toString());
-							}	
-						}else{
-							System.out.println("[AddrChanged(else)] oldIP: null");
-							if (!ip.toString().equals("0.0.0.0")){
-								System.out.println("[AddrChanged(else)] Colocando IP no array: "+ip.toString());	
-								array.put(ip.toString());
+						if (macsToSwitch.containsKey(device.getMACAddress())
+								&& downedMacs.contains(device.getMACAddress())){
+							// Do we know this Mac Address? i.e It has sent/received something before?
+							//logger.warn("Device {} is now on switch {} on port number {}",new Object[] {device.getMACAddress(), 
+							//		update.getSrc(), update.getSrcPort()});
+							System.out.println("[DeviceMoved]Device "+device.getMACAddress()
+												+" is now on switch "+dpid
+												+" on port number "+ port);
+							try {
+								auspiceUpdateLocation(device.getMACAddress(), dpid, port);
+							} catch (Exception e) {
+								e.printStackTrace();
 							}
-						}	
-					}
-					if (array.length()!=0)
-						auspiceUpdateIp(macGuid, device.getMACAddress(), array);
-				}	catch (Exception e) {
-					e.printStackTrace();
-				}
-			}
-			
-			@Override
-			public void deviceMoved(IDevice device) {
-				OFPort port = null;
-				DatapathId dpid = null;
-				// Set up parameters for it in Auspice
-				try {
-					/* 
-					 * Assuming there's only one attachment point at a time, this will work
-					 * If there's more than one attachment point, we need to check updateList
-					 * and match this switch+port to updateList switch+port combination, so 
-					 * we know which switch+port caused the update.
-					 *  TODO Handle connection to more than one attachment point at a time.
-					 */
-					if (isLinkUp){
-						// This is a link up event
-						for (SwitchPort attachment : device.getAttachmentPoints()){
-							dpid = attachment.getSwitchDPID();
-							port = attachment.getPort();
-							if (macsToSwitch.containsKey(device.getMACAddress())
-									&& downedMacs.contains(device.getMACAddress())){
-								// Do we know this Mac Address? i.e It has sent/received something before?
-								//logger.warn("Device {} is now on switch {} on port number {}",new Object[] {device.getMACAddress(), 
-									//		update.getSrc(), update.getSrcPort()});
-								System.out.println("[DeviceMoved]Device "+device.getMACAddress()
-													+" is now on switch "+dpid
-													+" on port number "+ port);
-								try {
-									auspiceUpdateLocation(device.getMACAddress(), dpid, port);
-								} catch (Exception e) {
-									e.printStackTrace();
-								}
-								if( (dpid.equals(macsToSwitch.get(device.getMACAddress()))) 
-										&& (port.equals(macsToPort.get(device.getMACAddress())))){
-									// Link up event but device location didn't change
-									System.out.println("[deviceMoved] Removing from downedMacs: "+device.getMACAddressString());
-									downedMacs.remove(device.getMACAddress());
-									return;
-								}
+							if( (dpid.equals(macsToSwitch.get(device.getMACAddress()))) 
+									&& (port.equals(macsToPort.get(device.getMACAddress())))){
+								// Link up event but device location didn't change
 								System.out.println("[deviceMoved] Removing from downedMacs: "+device.getMACAddressString());
 								downedMacs.remove(device.getMACAddress());
-								System.out.println("[deviceMoved] Adding to movedMacs: "+device.getMACAddressString());
-								movedMacs.add(device.getMACAddress());
+								return;
 							}
+							System.out.println("[deviceMoved] Removing from downedMacs: "+device.getMACAddressString());
+							downedMacs.remove(device.getMACAddress());
+							System.out.println("[deviceMoved] Adding to movedMacs: "+device.getMACAddressString());
+							movedMacs.add(device.getMACAddress());
 						}
-					}//else we don't need to do anything, as no one has ever contacted this device
-				}catch (Exception e) {
-					e.printStackTrace();
-				}
-				isLinkUp=false;
+					}
+				}//else we don't need to do anything, as no one has ever contacted this device
+			}catch (Exception e) {
+				e.printStackTrace();
 			}
-
-			@Override
-			public void deviceVlanChanged(IDevice device) {
-				//ignore
-			}
-
-			@Override
-			public String getName() {
-				return AuspiceListener.this.getName();
-			}
-
-			@Override
-			public boolean isCallbackOrderingPrereq(String type, String name) {
-				return false;
-			}
-
-			@Override
-			public boolean isCallbackOrderingPostreq(String type, String name) {
-				// We need to go before forwarding
-				return false;
-			}
-
+			isLinkUp=false;
 		}
+
+		@Override
+		public void deviceVlanChanged(IDevice device) {
+			//ignore
+		}
+
+		@Override
+		public String getName() {
+			return AuspiceListener.this.getName();
+		}
+
+		@Override
+		public boolean isCallbackOrderingPrereq(String type, String name) {
+			return false;
+		}
+
+		@Override
+		public boolean isCallbackOrderingPostreq(String type, String name) {
+			// We need to go before forwarding
+			return false;
+		}
+
+	}
 	
 }

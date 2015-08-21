@@ -82,7 +82,7 @@ public abstract class ForwardingBase implements IOFMessageListener {
 	protected static int OFMESSAGE_DAMPER_CAPACITY = 10000; // TODO: find sweet spot
 	protected static int OFMESSAGE_DAMPER_TIMEOUT = 250; // ms
 
-	public static int FLOWMOD_DEFAULT_IDLE_TIMEOUT = 5; // in seconds
+	public static int FLOWMOD_DEFAULT_IDLE_TIMEOUT = 1; // in seconds
 	public static int FLOWMOD_DEFAULT_HARD_TIMEOUT = 0; // infinite
 	public static int FLOWMOD_DEFAULT_PRIORITY = 1; // 0 is the default table-miss flow in OF1.3+, so we need to use 1
 	
@@ -93,7 +93,7 @@ public abstract class ForwardingBase implements IOFMessageListener {
 	public static boolean FLOWMOD_DEFAULT_MATCH_IP_ADDR = true;
 	public static boolean FLOWMOD_DEFAULT_MATCH_TRANSPORT = true;
 
-	public static final short FLOWMOD_DEFAULT_IDLE_TIMEOUT_CONSTANT = 5;
+	public static final short FLOWMOD_DEFAULT_IDLE_TIMEOUT_CONSTANT = 1;
 	public static final short FLOWMOD_DEFAULT_HARD_TIMEOUT_CONSTANT = 0;
 
 	protected IFloodlightProviderService floodlightProviderService;
